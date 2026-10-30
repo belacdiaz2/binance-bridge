@@ -9,38 +9,51 @@ app.use(cors());
 
 const BINANCE_FUTURES_URL = "https://fapi.binance.com";
 
+// Verificación de estado
 app.get('/', (req, res) => {
-  res.send('Puente Binance Activo y Operativo');
+  res.json({ status: "ok", message: "Puente Binance Activo y Operativo" });
 });
 
-app.post('/api/fapi/*', async (req, res) => {
+// Manejador universal para cualquier ruta de /fapi
+app.all(['/fapi/*', '/api/fapi/*'], async (req, res) => {
   try {
-    const endpointPath = req.params[0];
-    const { apiKey, apiSecret, method = 'POST', params = {} } = req.body;
+    // Extrae la ruta real después de /fapi/
+    const fullPath = req.originalUrl.replace(/^\/api/, '');
+    const { apiKey, apiSecret, params: customParams = {} } = req.body || {};
 
-    if (!apiKey || !apiSecret) {
-      return res.status(400).json({ error: "Faltan credenciales apiKey o apiSecret" });
+    const key = apiKey || req.headers['x-mbx-apikey'];
+    const secret = apiSecret || req.headers['x-mbx-secret'];
+
+    // Para peticiones públicas (precios, libros, etc.)
+    if (!secret && !key) {
+      const response = await axios({
+        method: req.method.toLowerCase(),
+        url: `${BINANCE_FUTURES_URL}${fullPath}`,
+        headers: { 'Content-Type': 'application/json' }
+      });
+      return res.status(response.status).json(response.data);
     }
 
+    // Para peticiones firmadas (órdenes, saldos)
     const timestamp = Date.now();
-    const queryParams = { ...params, timestamp };
+    const queryParams = { ...req.query, ...customParams, timestamp };
 
     const queryString = Object.keys(queryParams)
-      .map(key => `${key}=${encodeURIComponent(queryParams[key])}`)
+      .map(k => `${k}=${encodeURIComponent(queryParams[k])}`)
       .join('&');
 
     const signature = crypto
-      .createHmac('sha256', apiSecret)
+      .createHmac('sha256', secret)
       .update(queryString)
       .digest('hex');
 
-    const targetUrl = `${BINANCE_FUTURES_URL}/fapi/${endpointPath}?${queryString}&signature=${signature}`;
+    const targetUrl = `${BINANCE_FUTURES_URL}${req.path.replace(/^\/api/, '')}?${queryString}&signature=${signature}`;
 
     const binanceResponse = await axios({
-      method: method.toLowerCase(),
+      method: req.method.toLowerCase(),
       url: targetUrl,
       headers: {
-        'X-MBX-APIKEY': apiKey,
+        'X-MBX-APIKEY': key,
         'Content-Type': 'application/json'
       }
     });
@@ -55,5 +68,5 @@ app.post('/api/fapi/*', async (req, res) => {
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log(`Servidor puente escuchando en puerto ${PORT}`);
+  console.log(`Servidor puente escuchando en el puerto ${PORT}`);
 });
